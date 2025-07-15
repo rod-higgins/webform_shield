@@ -3,9 +3,9 @@
  * Unlock protected forms.
  *
  * This works by resetting the form action to the path that it should be as well
- * as injecting the secret form token, only if the current user is verified to be
- * human which is done by waiting for a mousemove, swipe, or tab/enter key to be
- * pressed.
+ * as injecting the secret form token via AJAX, only if the current user is 
+ * verified to be human which is done by waiting for a mousemove, swipe, or 
+ * tab/enter key to be pressed.
  */
 
 ((Drupal, drupalSettings) => {
@@ -53,28 +53,56 @@
   };
 
   /**
-   * Unlock all locked forms.
+   * Unlock all locked forms by fetching tokens via AJAX.
    */
   Drupal.webformShield.unlockForms = () => {
     // Act only if we haven't yet verified this user as being human.
     if (!drupalSettings.webformShield.human) {
-      // Check if there are forms to unlock.
-      if (drupalSettings.webformShield.forms !== undefined) {
-        // Iterate all webform shield forms that we need to unlock.
-        Object.values(drupalSettings.webformShield.forms).forEach((config) => {
-          // Switch the action.
-          const form = document.getElementById(config.id);
-          if (form) {
-            form.setAttribute('action', form.getAttribute('data-action'));
-
-            // Set the token.
-            const input = form.querySelector('input[name="webform_shield_token"]');
-            if (input) {
-              input.value = config.token;
+      // Find all webform shield protected forms.
+      const forms = document.querySelectorAll('form.webform-shield');
+      
+      forms.forEach((form) => {
+        const formId = form.getAttribute('data-form-id');
+        const originalAction = form.getAttribute('data-action');
+        const tokenInput = form.querySelector('input[name="webform_shield_token"]');
+        
+        if (formId && originalAction && tokenInput) {
+          // Fetch token via AJAX.
+          fetch(`${drupalSettings.path.baseUrl}webform-shield/token/${formId}`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Requested-With': 'XMLHttpRequest',
+            },
+            credentials: 'same-origin',
+          })
+          .then(response => {
+            if (!response.ok) {
+              throw new Error(`HTTP error! status: ${response.status}`);
             }
-          }
-        });
-      }
+            return response.json();
+          })
+          .then(data => {
+            if (data.success && data.token) {
+              // Restore original form action.
+              form.setAttribute('action', originalAction);
+              
+              // Set the token.
+              tokenInput.value = data.token;
+              
+              // Mark form as unlocked.
+              form.classList.add('webform-shield-unlocked');
+            } else {
+              console.warn('Webform Shield: Failed to get token for form', formId, data.error || 'Unknown error');
+            }
+          })
+          .catch(error => {
+            console.error('Webform Shield: Error fetching token for form', formId, error);
+            // Form remains locked if token fetch fails.
+          });
+        }
+      });
+      
       // Mark this user as being human.
       drupalSettings.webformShield.human = true;
     }

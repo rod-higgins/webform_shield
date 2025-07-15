@@ -1,22 +1,11 @@
-webform_shield.settings:
-  type: config_object
-  label: 'Webform Shield settings.'
-  mapping:
-    form_ids:
-      type: sequence
-      label: 'The protected form IDs'
-      sequence:
-        type: string
-        label: 'The form ID'
-    excluded_form_ids:
-      type: sequence
-      label: 'The form IDs that should never be protected'
-      sequence:
-        type: string
-        label: 'The form ID'
-    token_timeout:
-      type: integer
-      label: 'Token timeout in seconds'
-    show_form_ids:
-      type: boolean
-      label: 'Show form IDs to admins'
+# Default configuration values for Webform Shield
+form_ids:
+  - 'comment_*'
+  - 'user_login_form'
+  - 'user_pass'
+  - 'user_register_form'
+  - 'contact_message_*'
+  - 'webform_*'
+excluded_form_ids: []
+token_timeout: 900
+show_form_ids: false

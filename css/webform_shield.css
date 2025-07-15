@@ -21,3 +21,25 @@
   background-color: #fcf4f2;
   box-shadow: -8px 0 0 #e62600;
 }
+
+/* Loading state for protected forms */
+.webform-shield {
+  position: relative;
+}
+
+.webform-shield:not(.webform-shield-unlocked)::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(255, 255, 255, 0.8);
+  z-index: 999;
+  pointer-events: none;
+}
+
+/* Visual indicator for unlocked forms (for debugging) */
+.webform-shield-unlocked {
+  /* Form is ready for submission */
+}

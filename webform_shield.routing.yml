@@ -16,3 +16,12 @@ webform_shield.blocked:
   requirements:
     # This is anonymously accessible 'Submission Failed' page.
     _access: 'TRUE'
+
+webform_shield.token:
+  path: '/webform-shield/token/{form_id}'
+  defaults:
+    _controller: '\Drupal\webform_shield\Controller\WebformShieldTokenController::generateToken'
+  requirements:
+    _access: 'TRUE'
+    form_id: '[a-zA-Z0-9_-]+'
+  methods: [POST]

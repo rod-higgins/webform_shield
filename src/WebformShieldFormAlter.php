@@ -16,22 +16,16 @@ class WebformShieldFormAlter implements RenderCallbackInterface {
     // Add the Webform Shield library.
     $build['#attached']['library'][] = 'webform_shield/webform_shield.form';
 
-    // Store the form ID that the JS can replace the action path along with the
-    // form token.
+    // Store the form ID for AJAX token generation.
     $form_id = $build['#id'];
     if (isset($build['#attributes']['id'])) {
       $form_id = $build['#attributes']['id'];
     }
 
-    $build['#attached']['drupalSettings']['webformShield']['forms'][$build['#id']] = [
-      'id' => $form_id,
-      'token' => $build['#webform_shield_token'],
-    ];
-
-    // Store the action placeholder as an attribute so that it converts
-    // during the building of the form.
+    // Store original action and form ID as data attributes for JavaScript.
     $build['#attributes']['data-action'] = $build['#action'];
-
+    $build['#attributes']['data-form-id'] = $build['#form_id'];
+    
     // Change the action so the submission does not go through.
     $build['#action'] = base_path() . 'webform-shield';
 
