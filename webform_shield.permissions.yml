@@ -1,0 +1,8 @@
+administer webform shield configuration:
+  title: 'Administer webform shield configuration'
+  description: 'Access to the Webform Shield configurations'
+  restrict access: true
+
+skip webform shield:
+  title: 'Skip webform shield'
+  description: 'Webform Shield will be bypassed for users with this permission.'

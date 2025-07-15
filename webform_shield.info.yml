@@ -1,0 +1,6 @@
+name: Webform Shield
+type: module
+description: Prevent form spam with encrypted dynamic keys and configurable timeouts
+package: Spam control
+core_version_requirement: ^8.8 || ^9 || ^10 || ^11
+configure: webform_shield.settings

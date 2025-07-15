@@ -1,0 +1,18 @@
+webform_shield.settings:
+  path: '/admin/config/user-interface/webform-shield'
+  defaults:
+    _form: '\Drupal\webform_shield\Form\WebformShieldSettingsForm'
+    _title: 'Webform Shield settings'
+  requirements:
+    _permission: 'administer webform shield configuration'
+  options:
+    _admin_route: TRUE
+
+webform_shield.blocked:
+  path: '/webform-shield'
+  defaults:
+    _controller: '\Drupal\webform_shield\Controller\WebformShieldPageController::page'
+    _title: 'Submission failed'
+  requirements:
+    # This is anonymously accessible 'Submission Failed' page.
+    _access: 'TRUE'

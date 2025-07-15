@@ -1,0 +1,6 @@
+webform_shield.settings:
+  title: 'Webform Shield'
+  route_name: webform_shield.settings
+  description: 'Configure the settings for Webform Shield.'
+  parent: system.admin_config_ui
+  weight: 99

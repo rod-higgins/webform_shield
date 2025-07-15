@@ -1,0 +1,279 @@
+<?php
+
+/**
+ * @file
+ * Implements the webform_shield module.
+ */
+
+use Drupal\Component\Utility\Crypt;
+use Drupal\Core\Cache\CacheableMetadata;
+use Drupal\Core\Form\FormStateInterface;
+use Drupal\Core\Routing\RouteMatchInterface;
+use Drupal\Core\Site\Settings;
+use Drupal\webform_shield\WebformShieldFormAlter;
+use Drupal\views\ViewExecutable;
+
+/**
+ * Implements hook_help().
+ */
+function webform_shield_help($route_name, RouteMatchInterface $route_match) {
+  switch ($route_name) {
+    case 'help.page.webform_shield':
+      $output = '';
+      $output .= '<h3>' . t('About') . '</h3>';
+      $output .= '<p>' . t('Prevent form spam with encrypted dynamic keys and configurable timeouts') . '</p>';
+      return $output;
+  }
+}
+
+/**
+ * Implements hook_theme().
+ */
+function webform_shield_theme($existing, $type, $theme, $path) {
+  return [
+    'webform_shield_no_js' => [
+      'template'  => 'webform-shield-no-js',
+      'variables' => [
+        'message' => NULL,
+      ],
+      'path' => $path . '/templates',
+    ],
+  ];
+}
+
+/**
+ * Implements hook_form_alter().
+ */
+function webform_shield_form_alter(&$form, FormStateInterface $form_state, $form_id) {
+  $skip_shield = FALSE;
+
+  // Set skip shield to true if user has appropriate permission.
+  if (\Drupal::currentUser()->hasPermission('skip webform shield')) {
+    $skip_shield = TRUE;
+  }
+
+  $protection = FALSE;
+
+  // Load module config.
+  $config = \Drupal::config('webform_shield.settings');
+
+  // Get the configured active form IDs for webform shield.
+  if ($form_ids = $config->get('form_ids')) {
+    $excluded_form_ids = $config->get('excluded_form_ids') ?? [];
+
+    // Check if this form is a match.
+    $pathMatcher = \Drupal::service('path.matcher');
+    $included = $pathMatcher->matchPath($form_id, implode("\n", $form_ids)) || $pathMatcher->matchPath($form['#id'], implode("\n", $form_ids));
+    $excluded = $pathMatcher->matchPath($form_id, implode("\n", $excluded_form_ids)) || $pathMatcher->matchPath($form['#id'], implode("\n", $excluded_form_ids));
+
+    $protection = $included && !$excluded;
+
+    // Other modules can change the protection of this form.
+    \Drupal::moduleHandler()->alter('webform_shield_form_status', $form_id, $protection);
+
+    if ($protection) {
+      // Enable protection for this form if user doesn't have skip permission.
+      if (!$skip_shield) {
+        webform_shield_protect_form($form);
+        // Track that protection was added.
+        $protection = TRUE;
+      }
+    }
+  }
+
+  // Determine if we should display the form ID.
+  if ($config->get('show_form_ids')) {
+    // Check if the user has permission to view these messages.
+    if (\Drupal::currentUser()->hasPermission('administer webform shield configuration')) {
+      // Set a message with the form ID and status.
+      \Drupal::messenger()->addMessage(t('Webform Shield (:id): :status', [
+        ':id' => $form_id,
+        ':status' => $protection ? t('enabled') : t('disabled'),
+      ]));
+    }
+  }
+
+  // Tag this form with Webform Shield settings config.
+  $cache_metadata = CacheableMetadata::createFromRenderArray($form);
+  $cache_metadata->addCacheableDependency($config);
+  $cache_metadata->applyTo($form);
+}
+
+/**
+ * Implements hook_page_attachments().
+ */
+function webform_shield_page_attachments(array &$page) {
+  // Adds noscript style to HEAD.
+  $noscript_style = [
+    '#tag' => 'style',
+    '#value' => 'form.webform-shield * :not(.webform-shield-message) { display: none !important; }',
+    '#noscript' => TRUE,
+  ];
+  $page['#attached']['html_head'][] = [$noscript_style, 'webform_shield_style'];
+}
+
+/**
+ * Helper function to enable Webform Shield protection for a given form.
+ *
+ * @param array &$form
+ *   The form to enable Webform Shield protection on.
+ */
+function webform_shield_protect_form(array &$form) {
+  // Stop if the form is already protected.
+  if (!empty($form['#webform_shield_token'])) {
+    return;
+  }
+
+  // Generate a token for this form.
+  $token = _webform_shield_generate_token($form['#form_id']);
+
+  // Store the token in the form.
+  $form['#webform_shield_token'] = $token;
+
+  // Add a hidden value which will receive the token via JS.
+  $form['webform_shield_token'] = [
+    '#type' => 'hidden',
+    '#value' => '',
+  ];
+
+  // Provide a message in the event that the user does not have JavaScript.
+  $form['webform_shield_no_js'] = [
+    '#theme' => 'webform_shield_no_js',
+    '#message' => t('You must have JavaScript enabled to use this form.'),
+    '#weight' => -500,
+  ];
+
+  // Add a pre-render function.
+  $form['#pre_render'][] = [WebformShieldFormAlter::class, 'preRender'];
+
+  // Add validation for the token.
+  $form['#validate'][] = 'webform_shield_form_validation';
+}
+
+/**
+ * Validation callback for Webform Shield-enabled forms.
+ */
+function webform_shield_form_validation($form, FormStateInterface $form_state) {
+  // Stop validation if the form was submitted programmatically.
+  if ($form_state->isProgrammed()) {
+    return;
+  }
+
+  // Get the user input.
+  $input = $form_state->getUserInput();
+
+  // Extract the submitted token.
+  $submitted_token = $input['webform_shield_token'] ?? NULL;
+
+  // Views exposed forms will initially load and submit without the token.
+  if (($form['#form_id'] == 'views_exposed_form') && ($submitted_token === NULL)) {
+    return;
+  }
+
+  // Check if the token is missing or invalid.
+  if (!$submitted_token || !_webform_shield_validate_token($submitted_token, $form['#form_id'])) {
+    $form_state->setErrorByName('', t('Submission failed. Please reload the page, ensure JavaScript is enabled and try again.'));
+  }
+}
+
+/**
+ * Implements hook_views_pre_render().
+ *
+ * Unset webform_shield_token from exposed_raw_input to remove it from pagers link.
+ */
+function webform_shield_views_pre_render(ViewExecutable $view) {
+  if (isset($view->exposed_raw_input['webform_shield_token'])) {
+    unset($view->exposed_raw_input['webform_shield_token']);
+  }
+}
+
+/**
+ * Implements hook_cron().
+ *
+ * Clean up expired tokens.
+ */
+function webform_shield_cron() {
+  _webform_shield_cleanup_expired_tokens();
+}
+
+/**
+ * Helper function to generate a token for a given form.
+ */
+function _webform_shield_generate_token($form_id): string {
+  $config = \Drupal::config('webform_shield.settings');
+  $timeout = $config->get('token_timeout') ?: 900; // Default 15 minutes
+  
+  $timestamp = \Drupal::time()->getRequestTime();
+  $expiry = $timestamp + $timeout;
+  
+  // Create a unique token ID.
+  $token_id = Crypt::randomBytesBase64(32);
+  
+  // Create token data with form ID, timestamp, and expiry.
+  $token_data = [
+    'form_id' => $form_id,
+    'timestamp' => $timestamp,
+    'expiry' => $expiry,
+    'session_id' => session_id() ?: 'anonymous',
+  ];
+  
+  // Store token data in cache.
+  $cache = \Drupal::cache();
+  $cache->set('webform_shield:' . $token_id, $token_data, $expiry);
+  
+  // Return the token ID (will be signed by JavaScript when form is unlocked).
+  return $token_id;
+}
+
+/**
+ * Helper function to validate a token.
+ */
+function _webform_shield_validate_token($token_id, $form_id): bool {
+  try {
+    // Retrieve token data from cache.
+    $cache = \Drupal::cache();
+    $cached_data = $cache->get('webform_shield:' . $token_id);
+    
+    if (!$cached_data || !$cached_data->data) {
+      return FALSE;
+    }
+    
+    $token_data = $cached_data->data;
+    $current_time = \Drupal::time()->getRequestTime();
+    
+    // Validate token data.
+    if ($token_data['form_id'] !== $form_id) {
+      return FALSE;
+    }
+    
+    if ($token_data['expiry'] < $current_time) {
+      // Token expired, clean it up.
+      $cache->delete('webform_shield:' . $token_id);
+      return FALSE;
+    }
+    
+    // Optional: Check session ID for additional security.
+    $current_session = session_id() ?: 'anonymous';
+    if ($token_data['session_id'] !== $current_session) {
+      return FALSE;
+    }
+    
+    // Token is valid, remove it to prevent reuse.
+    $cache->delete('webform_shield:' . $token_id);
+    
+    return TRUE;
+  }
+  catch (\Exception $e) {
+    // Log the error and return false.
+    \Drupal::logger('webform_shield')->error('Token validation error: @message', ['@message' => $e->getMessage()]);
+    return FALSE;
+  }
+}
+
+/**
+ * Helper function to clean up expired tokens.
+ */
+function _webform_shield_cleanup_expired_tokens() {
+  // This is handled automatically by Drupal's cache system when tokens expire.
+  // Additional cleanup could be implemented here if needed.
+}
