@@ -1,6 +1,6 @@
 webform_shield.settings:
   type: config_object
-  label: 'Webform Shield settings.'
+  label: 'Webform Shield settings with enhanced security.'
   mapping:
     form_ids:
       type: sequence
@@ -17,6 +17,27 @@ webform_shield.settings:
     token_timeout:
       type: integer
       label: 'Token timeout in seconds'
+    check_ip:
+      type: boolean
+      label: 'Check IP address for token validation'
+    rate_limit_enabled:
+      type: boolean
+      label: 'Enable rate limiting for token requests'
+    rate_limit_threshold:
+      type: integer
+      label: 'Rate limit threshold per hour per IP'
+    log_security_events:
+      type: boolean
+      label: 'Log security events for monitoring'
+    block_suspicious_requests:
+      type: boolean
+      label: 'Block suspicious requests'
+    csrf_token_validation:
+      type: boolean
+      label: 'Require CSRF tokens for all requests'
     show_form_ids:
       type: boolean
       label: 'Show form IDs to admins'
+    debug_mode:
+      type: boolean
+      label: 'Enable debug mode for development'

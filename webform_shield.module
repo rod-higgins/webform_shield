@@ -2,7 +2,7 @@
 
 /**
  * @file
- * Implements the webform_shield module.
+ * Implements the webform_shield module with enhanced security.
  */
 
 use Drupal\Component\Utility\Crypt;
@@ -187,6 +187,14 @@ function webform_shield_form_validation($form, FormStateInterface $form_state) {
 
   // Check if the token is missing or invalid.
   if (!$submitted_token || !_webform_shield_validate_token($submitted_token, $form['#form_id'])) {
+    // Enhanced security logging for failed validations
+    \Drupal::logger('webform_shield')->warning('Token validation failed: Form=@form, IP=@ip, User=@user, Token=@token', [
+      '@form' => $form['#form_id'],
+      '@ip' => \Drupal::request()->getClientIp(),
+      '@user' => \Drupal::currentUser()->id(),
+      '@token' => $submitted_token ? 'present' : 'missing',
+    ]);
+    
     $form_state->setErrorByName('', t('Submission failed. Please reload the page, ensure JavaScript is enabled and try again.'));
   }
 }
@@ -223,28 +231,44 @@ function _webform_shield_generate_token($form_id): string {
   $timestamp = \Drupal::time()->getRequestTime();
   $expiry = $timestamp + $timeout;
   
-  // Create a unique token ID.
+  // Create a unique token ID with enhanced entropy
   $token_id = Crypt::randomBytesBase64(32);
   
-  // Create token data with form ID, timestamp, and expiry.
-  // IMPORTANT: session_id() only called during AJAX, not form render
+  // Get current session information
+  $session_id = session_id() ?: 'anonymous';
+  $user_id = \Drupal::currentUser()->id();
+  $client_ip = \Drupal::request()->getClientIp();
+  
+  // Create token data with enhanced security information
   $token_data = [
     'form_id' => $form_id,
     'timestamp' => $timestamp,
     'expiry' => $expiry,
-    'session_id' => session_id() ?: 'anonymous',
+    'session_id' => $session_id,
+    'user_id' => $user_id,
+    'client_ip' => $client_ip,
+    'user_agent_hash' => hash('sha256', \Drupal::request()->headers->get('User-Agent', '')),
+    'site_salt' => Settings::getHashSalt(),
   ];
   
-  // Store token data in cache.
+  // Store token data in cache with enhanced metadata
   $cache = \Drupal::cache();
-  $cache->set('webform_shield:' . $token_id, $token_data, $expiry);
+  $cache->set('webform_shield:' . $token_id, $token_data, $expiry, ['webform_shield_token']);
+  
+  // Log token generation for audit trail
+  \Drupal::logger('webform_shield')->info('Token generated: Form=@form, User=@user, IP=@ip, Expiry=@expiry', [
+    '@form' => $form_id,
+    '@user' => $user_id,
+    '@ip' => $client_ip,
+    '@expiry' => date('Y-m-d H:i:s', $expiry),
+  ]);
   
   // Return the token ID.
   return $token_id;
 }
 
 /**
- * Helper function to validate a token.
+ * Helper function to validate a token with enhanced security checks.
  */
 function _webform_shield_validate_token($token_id, $form_id): bool {
   try {
@@ -258,6 +282,8 @@ function _webform_shield_validate_token($token_id, $form_id): bool {
     
     $token_data = $cached_data->data;
     $current_time = \Drupal::time()->getRequestTime();
+    $current_user = \Drupal::currentUser();
+    $request = \Drupal::request();
     
     // Validate token data.
     if ($token_data['form_id'] !== $form_id) {
@@ -270,20 +296,55 @@ function _webform_shield_validate_token($token_id, $form_id): bool {
       return FALSE;
     }
     
-    // Check session ID for additional security (only during validation).
+    // Enhanced security validations
+    
+    // Check session ID (only during validation).
     $current_session = session_id() ?: 'anonymous';
     if ($token_data['session_id'] !== $current_session) {
       return FALSE;
     }
     
-    // Token is valid, remove it to prevent reuse.
+    // Check user ID consistency
+    if ($token_data['user_id'] !== $current_user->id()) {
+      return FALSE;
+    }
+    
+    // Check client IP (optional - can be disabled for users behind proxies)
+    $check_ip = \Drupal::config('webform_shield.settings')->get('check_ip') !== FALSE;
+    if ($check_ip && $token_data['client_ip'] !== $request->getClientIp()) {
+      return FALSE;
+    }
+    
+    // Check user agent hash (prevents token hijacking)
+    $current_ua_hash = hash('sha256', $request->headers->get('User-Agent', ''));
+    if ($token_data['user_agent_hash'] !== $current_ua_hash) {
+      return FALSE;
+    }
+    
+    // Validate site salt (prevents tokens from other sites)
+    if ($token_data['site_salt'] !== Settings::getHashSalt()) {
+      return FALSE;
+    }
+    
+    // Token is valid, remove it to prevent reuse (one-time use).
     $cache->delete('webform_shield:' . $token_id);
+    
+    // Log successful validation
+    \Drupal::logger('webform_shield')->info('Token validated successfully: Form=@form, User=@user, IP=@ip', [
+      '@form' => $form_id,
+      '@user' => $current_user->id(),
+      '@ip' => $request->getClientIp(),
+    ]);
     
     return TRUE;
   }
   catch (\Exception $e) {
     // Log the error and return false.
-    \Drupal::logger('webform_shield')->error('Token validation error: @message', ['@message' => $e->getMessage()]);
+    \Drupal::logger('webform_shield')->error('Token validation error: @message | Form=@form, Token=@token', [
+      '@message' => $e->getMessage(),
+      '@form' => $form_id,
+      '@token' => $token_id,
+    ]);
     return FALSE;
   }
 }
@@ -294,4 +355,10 @@ function _webform_shield_validate_token($token_id, $form_id): bool {
 function _webform_shield_cleanup_expired_tokens() {
   // This is handled automatically by Drupal's cache system when tokens expire.
   // Additional cleanup could be implemented here if needed.
+  
+  // Clear any cache tags for expired tokens
+  \Drupal::service('cache_tags.invalidator')->invalidateTags(['webform_shield_token']);
+  
+  // Log cleanup activity
+  \Drupal::logger('webform_shield')->info('Token cleanup completed via cron');
 }

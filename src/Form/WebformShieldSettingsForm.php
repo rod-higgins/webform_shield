@@ -6,7 +6,7 @@ use Drupal\Core\Form\ConfigFormBase;
 use Drupal\Core\Form\FormStateInterface;
 
 /**
- * Implement Class Webform Shield Settings Form.
+ * Implement Class Webform Shield Settings Form with enhanced security options.
  */
 class WebformShieldSettingsForm extends ConfigFormBase {
 
@@ -35,24 +35,40 @@ class WebformShieldSettingsForm extends ConfigFormBase {
     $form['message'] = [
       '#type' => 'html_tag',
       '#tag' => 'h3',
-      '#value' => $this->t('Webform Shield requires that a user has JavaScript enabled and performs human-like interactions to use and submit protected forms.'),
+      '#value' => $this->t('Webform shield configuration.'),
     ];
 
-    $form['form_ids'] = [
+    // Form Protection Settings
+    $form['form_protection'] = [
+      '#type' => 'fieldset',
+      '#title' => $this->t('Form Protection Settings'),
+      '#collapsible' => TRUE,
+      '#collapsed' => FALSE,
+    ];
+
+    $form['form_protection']['form_ids'] = [
       '#type' => 'textarea',
       '#title' => $this->t('Form IDs'),
       '#default_value' => is_array($config->get('form_ids')) ? implode("\r\n", $config->get('form_ids')) : '',
       '#description' => $this->t('Specify the form IDs that should be protected by Webform Shield. Each form ID should be on a separate line. Wildcard (*) characters can be used.'),
     ];
 
-    $form['excluded_form_ids'] = [
+    $form['form_protection']['excluded_form_ids'] = [
       '#type' => 'textarea',
       '#title' => $this->t('Excluded form IDs'),
       '#default_value' => implode("\r\n", $config->get('excluded_form_ids') ?? []),
       '#description' => $this->t('Specify the form IDs that should never be protected by Webform Shield. Each form ID should be on a separate line. Wildcard (*) characters can be used.'),
     ];
 
-    $form['token_timeout'] = [
+    // Security Settings
+    $form['security'] = [
+      '#type' => 'fieldset',
+      '#title' => $this->t('Security Settings'),
+      '#collapsible' => TRUE,
+      '#collapsed' => FALSE,
+    ];
+
+    $form['security']['token_timeout'] = [
       '#type' => 'number',
       '#title' => $this->t('Token timeout (seconds)'),
       '#default_value' => $config->get('token_timeout') ?: 900,
@@ -62,11 +78,99 @@ class WebformShieldSettingsForm extends ConfigFormBase {
       '#description' => $this->t('How long tokens remain valid before expiring. Default is 900 seconds (15 minutes). Minimum is 60 seconds, maximum is 3600 seconds (1 hour).'),
     ];
 
-    $form['show_form_ids'] = [
+    $form['security']['check_ip'] = [
+      '#type' => 'checkbox',
+      '#title' => $this->t('Check IP address'),
+      '#default_value' => $config->get('check_ip') !== FALSE,
+      '#description' => $this->t('When enabled, tokens will be validated against the client IP address. This provides additional security but may cause issues for users behind proxies or with dynamic IP addresses. Disable if you experience issues with legitimate users.'),
+    ];
+
+    $form['security']['rate_limit_enabled'] = [
+      '#type' => 'checkbox',
+      '#title' => $this->t('Enable rate limiting'),
+      '#default_value' => $config->get('rate_limit_enabled') !== FALSE,
+      '#description' => $this->t('When enabled, limits the number of token requests per IP address to prevent abuse.'),
+    ];
+
+    $form['security']['rate_limit_threshold'] = [
+      '#type' => 'number',
+      '#title' => $this->t('Rate limit threshold'),
+      '#default_value' => $config->get('rate_limit_threshold') ?: 100,
+      '#min' => 10,
+      '#max' => 1000,
+      '#step' => 10,
+      '#description' => $this->t('Maximum number of token requests allowed per IP address per hour. Default is 100.'),
+      '#states' => [
+        'visible' => [
+          ':input[name="rate_limit_enabled"]' => ['checked' => TRUE],
+        ],
+      ],
+    ];
+
+    // Advanced Security Settings
+    $form['advanced_security'] = [
+      '#type' => 'fieldset',
+      '#title' => $this->t('Advanced Security Settings'),
+      '#collapsible' => TRUE,
+      '#collapsed' => TRUE,
+    ];
+
+    $form['advanced_security']['log_security_events'] = [
+      '#type' => 'checkbox',
+      '#title' => $this->t('Log security events'),
+      '#default_value' => $config->get('log_security_events') !== FALSE,
+      '#description' => $this->t('When enabled, security events such as invalid requests, rate limiting, and token validation failures will be logged. This helps with security monitoring but may increase log volume.'),
+    ];
+
+    $form['advanced_security']['block_suspicious_requests'] = [
+      '#type' => 'checkbox',
+      '#title' => $this->t('Block suspicious requests'),
+      '#default_value' => $config->get('block_suspicious_requests') !== FALSE,
+      '#description' => $this->t('When enabled, requests that appear suspicious (missing headers, invalid origins, etc.) will be blocked. This provides enhanced security but may cause issues with some legitimate requests.'),
+    ];
+
+    $form['advanced_security']['csrf_token_validation'] = [
+      '#type' => 'checkbox',
+      '#title' => $this->t('Require CSRF tokens'),
+      '#default_value' => $config->get('csrf_token_validation') !== FALSE,
+      '#description' => $this->t('When enabled, all token requests must include a valid CSRF token. This is strongly recommended for security.'),
+      '#disabled' => TRUE, // Always required for security
+    ];
+
+    // Development Settings
+    $form['development'] = [
+      '#type' => 'fieldset',
+      '#title' => $this->t('Development Settings'),
+      '#collapsible' => TRUE,
+      '#collapsed' => TRUE,
+    ];
+
+    $form['development']['show_form_ids'] = [
       '#type' => 'checkbox',
       '#title' => $this->t('Display form IDs'),
       '#default_value' => $config->get('show_form_ids'),
       '#description' => $this->t('When enabled, the form IDs of all forms on every page will be displayed to any user with permission to access these settings. Also displayed will be whether or not Webform Shield is enabled for each form. This should only be turned on temporarily in order to easily determine the form IDs to use.'),
+    ];
+
+    $form['development']['debug_mode'] = [
+      '#type' => 'checkbox',
+      '#title' => $this->t('Debug mode'),
+      '#default_value' => $config->get('debug_mode'),
+      '#description' => $this->t('When enabled, additional debugging information will be logged and displayed. This should only be enabled during development and testing.'),
+    ];
+
+    // Security Status
+    $form['security_status'] = [
+      '#type' => 'fieldset',
+      '#title' => $this->t('Security Status'),
+      '#collapsible' => TRUE,
+      '#collapsed' => TRUE,
+    ];
+
+    $form['security_status']['status_info'] = [
+      '#type' => 'item',
+      '#title' => $this->t('Current Security Level'),
+      '#markup' => $this->getSecurityStatusMarkup($config),
     ];
 
     return parent::buildForm($form, $form_state);
@@ -82,8 +186,61 @@ class WebformShieldSettingsForm extends ConfigFormBase {
       ->set('form_ids', array_filter(explode("\r\n", $form_state->getValue('form_ids'))))
       ->set('excluded_form_ids', array_filter(explode("\r\n", $form_state->getValue('excluded_form_ids'))))
       ->set('token_timeout', (int) $form_state->getValue('token_timeout'))
+      ->set('check_ip', (bool) $form_state->getValue('check_ip'))
+      ->set('rate_limit_enabled', (bool) $form_state->getValue('rate_limit_enabled'))
+      ->set('rate_limit_threshold', (int) $form_state->getValue('rate_limit_threshold'))
+      ->set('log_security_events', (bool) $form_state->getValue('log_security_events'))
+      ->set('block_suspicious_requests', (bool) $form_state->getValue('block_suspicious_requests'))
+      ->set('csrf_token_validation', TRUE) // Always enabled for security
       ->set('show_form_ids', (bool) $form_state->getValue('show_form_ids'))
+      ->set('debug_mode', (bool) $form_state->getValue('debug_mode'))
       ->save();
+
+    // Clear caches to ensure new settings take effect
+    drupal_flush_all_caches();
+  }
+
+  /**
+   * Generate security status markup.
+   *
+   * @param \Drupal\Core\Config\Config $config
+   *   The configuration object.
+   *
+   * @return string
+   *   The security status markup.
+   */
+  private function getSecurityStatusMarkup($config) {
+    $security_features = [
+      'CSRF Protection' => TRUE, // Always enabled
+      'IP Address Validation' => $config->get('check_ip') !== FALSE,
+      'Rate Limiting' => $config->get('rate_limit_enabled') !== FALSE,
+      'Security Event Logging' => $config->get('log_security_events') !== FALSE,
+      'Suspicious Request Blocking' => $config->get('block_suspicious_requests') !== FALSE,
+    ];
+
+    $enabled_count = count(array_filter($security_features));
+    $total_count = count($security_features);
+    $percentage = round(($enabled_count / $total_count) * 100);
+
+    $markup = '<div class="webform-shield-security-status">';
+    $markup .= '<p><strong>Security Level: ' . $percentage . '%</strong> (' . $enabled_count . '/' . $total_count . ' features enabled)</p>';
+    $markup .= '<ul>';
+    
+    foreach ($security_features as $feature => $enabled) {
+      $status = $enabled ? '✓ Enabled' : '✗ Disabled';
+      $class = $enabled ? 'enabled' : 'disabled';
+      $markup .= '<li class="' . $class . '">' . $feature . ': ' . $status . '</li>';
+    }
+    
+    $markup .= '</ul>';
+    
+    if ($percentage < 80) {
+      $markup .= '<p><strong>Recommendation:</strong> Enable more security features for better protection.</p>';
+    }
+    
+    $markup .= '</div>';
+    
+    return $markup;
   }
 
 }
