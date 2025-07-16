@@ -120,6 +120,26 @@ function webform_shield_page_attachments(array &$page) {
     '#noscript' => TRUE,
   ];
   $page['#attached']['html_head'][] = [$noscript_style, 'webform_shield_style'];
+
+  // Pass debug mode setting to JavaScript.
+  $config = \Drupal::config('webform_shield.settings');
+  $debug_mode = $config->get('debug_mode') ?: FALSE;
+  $log_security_events = $config->get('log_security_events') !== FALSE;
+  
+  $page['#attached']['drupalSettings']['webformShield']['debugMode'] = $debug_mode;
+  $page['#attached']['drupalSettings']['webformShield']['logSecurityEvents'] = $log_security_events;
+  
+  // Add debug information to page if debug mode is enabled
+  if ($debug_mode && \Drupal::currentUser()->hasPermission('administer webform shield configuration')) {
+    $page['#attached']['drupalSettings']['webformShield']['debugInfo'] = [
+      'tokenTimeout' => $config->get('token_timeout') ?: 900,
+      'checkIp' => $config->get('check_ip') !== FALSE,
+      'rateLimitEnabled' => $config->get('rate_limit_enabled') !== FALSE,
+      'rateLimitThreshold' => $config->get('rate_limit_threshold') ?: 100,
+      'protectedForms' => $config->get('form_ids') ?: [],
+      'excludedForms' => $config->get('excluded_form_ids') ?: [],
+    ];
+  }
 }
 
 /**
@@ -226,6 +246,7 @@ function webform_shield_cron() {
  */
 function _webform_shield_generate_token($form_id): string {
   $config = \Drupal::config('webform_shield.settings');
+  $debug_mode = $config->get('debug_mode') ?: FALSE;
   $timeout = $config->get('token_timeout') ?: 900; // Default 15 minutes
   
   $timestamp = \Drupal::time()->getRequestTime();
@@ -238,6 +259,7 @@ function _webform_shield_generate_token($form_id): string {
   $session_id = session_id() ?: 'anonymous';
   $user_id = \Drupal::currentUser()->id();
   $client_ip = \Drupal::request()->getClientIp();
+  $user_agent = \Drupal::request()->headers->get('User-Agent', '');
   
   // Create token data with enhanced security information
   $token_data = [
@@ -247,9 +269,20 @@ function _webform_shield_generate_token($form_id): string {
     'session_id' => $session_id,
     'user_id' => $user_id,
     'client_ip' => $client_ip,
-    'user_agent_hash' => hash('sha256', \Drupal::request()->headers->get('User-Agent', '')),
+    'user_agent_hash' => hash('sha256', $user_agent),
     'site_salt' => Settings::getHashSalt(),
   ];
+  
+  // Debug logging for token generation
+  if ($debug_mode) {
+    \Drupal::logger('webform_shield')->debug('Token generation debug: Form=@form, TokenID=@token_id, Timeout=@timeout, SessionID=@session, UserAgent=@ua', [
+      '@form' => $form_id,
+      '@token_id' => substr($token_id, 0, 8) . '...',
+      '@timeout' => $timeout,
+      '@session' => substr($session_id, 0, 8) . '...',
+      '@ua' => substr($user_agent, 0, 100),
+    ]);
+  }
   
   // Store token data in cache with enhanced metadata
   $cache = \Drupal::cache();
@@ -271,12 +304,26 @@ function _webform_shield_generate_token($form_id): string {
  * Helper function to validate a token with enhanced security checks.
  */
 function _webform_shield_validate_token($token_id, $form_id): bool {
+  $config = \Drupal::config('webform_shield.settings');
+  $debug_mode = $config->get('debug_mode') ?: FALSE;
+  
   try {
+    // Debug logging for token validation start
+    if ($debug_mode) {
+      \Drupal::logger('webform_shield')->debug('Token validation debug: Starting validation for Form=@form, TokenID=@token_id', [
+        '@form' => $form_id,
+        '@token_id' => substr($token_id, 0, 8) . '...',
+      ]);
+    }
+    
     // Retrieve token data from cache.
     $cache = \Drupal::cache();
     $cached_data = $cache->get('webform_shield:' . $token_id);
     
     if (!$cached_data || !$cached_data->data) {
+      if ($debug_mode) {
+        \Drupal::logger('webform_shield')->debug('Token validation debug: Token not found in cache');
+      }
       return FALSE;
     }
     
@@ -285,12 +332,29 @@ function _webform_shield_validate_token($token_id, $form_id): bool {
     $current_user = \Drupal::currentUser();
     $request = \Drupal::request();
     
+    // Debug logging for token data
+    if ($debug_mode) {
+      \Drupal::logger('webform_shield')->debug('Token validation debug: Token data retrieved, validating fields...');
+    }
+    
     // Validate token data.
     if ($token_data['form_id'] !== $form_id) {
+      if ($debug_mode) {
+        \Drupal::logger('webform_shield')->debug('Token validation debug: Form ID mismatch - Expected=@expected, Got=@got', [
+          '@expected' => $form_id,
+          '@got' => $token_data['form_id'],
+        ]);
+      }
       return FALSE;
     }
     
     if ($token_data['expiry'] < $current_time) {
+      if ($debug_mode) {
+        \Drupal::logger('webform_shield')->debug('Token validation debug: Token expired - Expiry=@expiry, Current=@current', [
+          '@expiry' => date('Y-m-d H:i:s', $token_data['expiry']),
+          '@current' => date('Y-m-d H:i:s', $current_time),
+        ]);
+      }
       // Token expired, clean it up.
       $cache->delete('webform_shield:' . $token_id);
       return FALSE;
@@ -301,29 +365,55 @@ function _webform_shield_validate_token($token_id, $form_id): bool {
     // Check session ID (only during validation).
     $current_session = session_id() ?: 'anonymous';
     if ($token_data['session_id'] !== $current_session) {
+      if ($debug_mode) {
+        \Drupal::logger('webform_shield')->debug('Token validation debug: Session ID mismatch');
+      }
       return FALSE;
     }
     
     // Check user ID consistency
     if ($token_data['user_id'] !== $current_user->id()) {
+      if ($debug_mode) {
+        \Drupal::logger('webform_shield')->debug('Token validation debug: User ID mismatch - Expected=@expected, Got=@got', [
+          '@expected' => $current_user->id(),
+          '@got' => $token_data['user_id'],
+        ]);
+      }
       return FALSE;
     }
     
     // Check client IP (optional - can be disabled for users behind proxies)
-    $check_ip = \Drupal::config('webform_shield.settings')->get('check_ip') !== FALSE;
+    $check_ip = $config->get('check_ip') !== FALSE;
     if ($check_ip && $token_data['client_ip'] !== $request->getClientIp()) {
+      if ($debug_mode) {
+        \Drupal::logger('webform_shield')->debug('Token validation debug: IP address mismatch - Expected=@expected, Got=@got', [
+          '@expected' => $request->getClientIp(),
+          '@got' => $token_data['client_ip'],
+        ]);
+      }
       return FALSE;
     }
     
     // Check user agent hash (prevents token hijacking)
     $current_ua_hash = hash('sha256', $request->headers->get('User-Agent', ''));
     if ($token_data['user_agent_hash'] !== $current_ua_hash) {
+      if ($debug_mode) {
+        \Drupal::logger('webform_shield')->debug('Token validation debug: User agent hash mismatch');
+      }
       return FALSE;
     }
     
     // Validate site salt (prevents tokens from other sites)
     if ($token_data['site_salt'] !== Settings::getHashSalt()) {
+      if ($debug_mode) {
+        \Drupal::logger('webform_shield')->debug('Token validation debug: Site salt mismatch');
+      }
       return FALSE;
+    }
+    
+    // Debug logging for successful validation
+    if ($debug_mode) {
+      \Drupal::logger('webform_shield')->debug('Token validation debug: All validations passed, token is valid');
     }
     
     // Token is valid, remove it to prevent reuse (one-time use).
@@ -343,8 +433,16 @@ function _webform_shield_validate_token($token_id, $form_id): bool {
     \Drupal::logger('webform_shield')->error('Token validation error: @message | Form=@form, Token=@token', [
       '@message' => $e->getMessage(),
       '@form' => $form_id,
-      '@token' => $token_id,
+      '@token' => substr($token_id, 0, 8) . '...',
     ]);
+    
+    if ($debug_mode) {
+      \Drupal::logger('webform_shield')->debug('Token validation debug: Exception occurred - @message | @trace', [
+        '@message' => $e->getMessage(),
+        '@trace' => $e->getTraceAsString(),
+      ]);
+    }
+    
     return FALSE;
   }
 }

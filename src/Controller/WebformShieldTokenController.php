@@ -73,6 +73,9 @@ class WebformShieldTokenController extends ControllerBase {
    *   JSON response containing the token.
    */
   public function generateToken(Request $request, $form_id) {
+    $config = $this->config('webform_shield.settings');
+    $debug_mode = $config->get('debug_mode') ?: FALSE;
+    
     try {
       $client_ip = $request->getClientIp();
       $user_agent = $request->headers->get('User-Agent', '');
@@ -84,6 +87,15 @@ class WebformShieldTokenController extends ControllerBase {
         '@form' => $form_id,
         '@user' => $this->currentUser()->id(),
       ]);
+
+      // Debug logging for request details
+      if ($debug_mode) {
+        $this->getLogger('webform_shield')->debug('Token request debug: Method=@method, Headers=@headers, Origin=@origin', [
+          '@method' => $request->getMethod(),
+          '@headers' => json_encode($request->headers->all()),
+          '@origin' => $request->headers->get('Origin', 'none'),
+        ]);
+      }
 
       // Validate request method
       if (!$request->isMethod('POST')) {
@@ -104,14 +116,7 @@ class WebformShieldTokenController extends ControllerBase {
         ], 400);
       }
 
-      // Validate CSRF token in header
-      if (!$request->headers->has('X-CSRF-Token')) {
-        $this->logSecurityEvent('Missing CSRF token in header', $request, $form_id);
-        return new JsonResponse([
-          'success' => FALSE,
-          'error' => 'Missing security token',
-        ], 400);
-      }
+      // Note: CSRF validation is handled automatically by _csrf_request_header_token in routing
 
       // Additional origin validation
       $origin = $request->headers->get('Origin');
@@ -137,16 +142,26 @@ class WebformShieldTokenController extends ControllerBase {
       // Rate limiting check
       $flood_identifier = 'webform_shield.token_request';
       $flood_window = 3600; // 1 hour
-      $flood_threshold = 100; // 100 requests per hour per IP
+      $flood_threshold = $config->get('rate_limit_threshold') ?: 100;
 
-      if ($this->flood->isAllowed($flood_identifier, $flood_threshold, $flood_window, $client_ip)) {
-        $this->flood->register($flood_identifier, $flood_window, $client_ip);
+      if ($config->get('rate_limit_enabled') !== FALSE) {
+        if ($this->flood->isAllowed($flood_identifier, $flood_threshold, $flood_window, $client_ip)) {
+          $this->flood->register($flood_identifier, $flood_window, $client_ip);
+          
+          if ($debug_mode) {
+            $this->getLogger('webform_shield')->debug('Rate limit check passed for IP: @ip', ['@ip' => $client_ip]);
+          }
+        } else {
+          $this->logSecurityEvent('Rate limit exceeded', $request, $form_id);
+          return new JsonResponse([
+            'success' => FALSE,
+            'error' => 'Too many requests',
+          ], 429);
+        }
       } else {
-        $this->logSecurityEvent('Rate limit exceeded', $request, $form_id);
-        return new JsonResponse([
-          'success' => FALSE,
-          'error' => 'Too many requests',
-        ], 429);
+        if ($debug_mode) {
+          $this->getLogger('webform_shield')->debug('Rate limiting disabled');
+        }
       }
 
       // Validate form ID with stricter regex
@@ -159,9 +174,16 @@ class WebformShieldTokenController extends ControllerBase {
       }
 
       // Check if this form should be protected.
-      $config = $this->config('webform_shield.settings');
       $form_ids = $config->get('form_ids') ?? [];
       $excluded_form_ids = $config->get('excluded_form_ids') ?? [];
+
+      if ($debug_mode) {
+        $this->getLogger('webform_shield')->debug('Form protection check: FormID=@form_id, Patterns=@patterns, Exclusions=@exclusions', [
+          '@form_id' => $form_id,
+          '@patterns' => implode(', ', $form_ids),
+          '@exclusions' => implode(', ', $excluded_form_ids),
+        ]);
+      }
 
       if (empty($form_ids)) {
         $this->logSecurityEvent('No forms configured for protection', $request, $form_id);
@@ -179,6 +201,9 @@ class WebformShieldTokenController extends ControllerBase {
       foreach ($form_ids as $pattern) {
         if ($form_id === $pattern || $this->pathMatcher->matchPath($form_id, $pattern)) {
           $included = TRUE;
+          if ($debug_mode) {
+            $this->getLogger('webform_shield')->debug('Form matched inclusion pattern: @pattern', ['@pattern' => $pattern]);
+          }
           break;
         }
       }
@@ -187,6 +212,9 @@ class WebformShieldTokenController extends ControllerBase {
       foreach ($excluded_form_ids as $pattern) {
         if ($form_id === $pattern || $this->pathMatcher->matchPath($form_id, $pattern)) {
           $excluded = TRUE;
+          if ($debug_mode) {
+            $this->getLogger('webform_shield')->debug('Form matched exclusion pattern: @pattern', ['@pattern' => $pattern]);
+          }
           break;
         }
       }
@@ -216,6 +244,9 @@ class WebformShieldTokenController extends ControllerBase {
         $session = $request->getSession();
         if (!$session->isStarted()) {
           $session->start();
+          if ($debug_mode) {
+            $this->getLogger('webform_shield')->debug('Started session for anonymous user');
+          }
         }
       }
 
@@ -252,6 +283,14 @@ class WebformShieldTokenController extends ControllerBase {
         '@message' => $e->getMessage(),
         '@trace' => $e->getTraceAsString(),
       ]);
+
+      if ($debug_mode) {
+        $this->getLogger('webform_shield')->debug('Token generation debug: Exception details - @message | @file:@line', [
+          '@message' => $e->getMessage(),
+          '@file' => $e->getFile(),
+          '@line' => $e->getLine(),
+        ]);
+      }
 
       return new JsonResponse([
         'success' => FALSE,

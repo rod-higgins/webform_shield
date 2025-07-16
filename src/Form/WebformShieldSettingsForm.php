@@ -35,7 +35,7 @@ class WebformShieldSettingsForm extends ConfigFormBase {
     $form['message'] = [
       '#type' => 'html_tag',
       '#tag' => 'h3',
-      '#value' => $this->t('Webform shield configuration.'),
+      '#value' => $this->t('Configuration'),
     ];
 
     // Form Protection Settings
@@ -48,16 +48,16 @@ class WebformShieldSettingsForm extends ConfigFormBase {
 
     $form['form_protection']['form_ids'] = [
       '#type' => 'textarea',
-      '#title' => $this->t('Form IDs'),
+      '#title' => $this->t('Form IDs to Protect'),
       '#default_value' => is_array($config->get('form_ids')) ? implode("\r\n", $config->get('form_ids')) : '',
-      '#description' => $this->t('Specify the form IDs that should be protected by Webform Shield. Each form ID should be on a separate line. Wildcard (*) characters can be used.'),
+      '#description' => $this->t('Specify the form IDs that should be protected by Webform Shield. Each form ID should be on a separate line. Wildcard (*) characters can be used.<br><strong>Important:</strong> Protection is OPT-IN based on form IDs, not URL paths. Admin forms (/admin/*) and batch forms (/batch/*) are NOT protected by default and should generally remain unprotected for security and usability reasons.'),
     ];
 
     $form['form_protection']['excluded_form_ids'] = [
       '#type' => 'textarea',
-      '#title' => $this->t('Excluded form IDs'),
+      '#title' => $this->t('Excluded Form IDs'),
       '#default_value' => implode("\r\n", $config->get('excluded_form_ids') ?? []),
-      '#description' => $this->t('Specify the form IDs that should never be protected by Webform Shield. Each form ID should be on a separate line. Wildcard (*) characters can be used.'),
+      '#description' => $this->t('Specify the form IDs that should never be protected by Webform Shield, even if they match the inclusion patterns above. Each form ID should be on a separate line. Wildcard (*) characters can be used.<br><strong>Note:</strong> Admin and system forms are excluded by default for safety.'),
     ];
 
     // Security Settings
@@ -156,7 +156,7 @@ class WebformShieldSettingsForm extends ConfigFormBase {
       '#type' => 'checkbox',
       '#title' => $this->t('Debug mode'),
       '#default_value' => $config->get('debug_mode'),
-      '#description' => $this->t('When enabled, additional debugging information will be logged and displayed. This should only be enabled during development and testing.'),
+      '#description' => $this->t('When enabled, additional debugging information will be logged to watchdog and sent to the browser console. This includes detailed token generation/validation logs, security check results, and step-by-step processing information. <strong>Performance impact:</strong> Should only be enabled during development or temporary troubleshooting. <strong>Security consideration:</strong> Detailed logs may expose system information.'),
     ];
 
     // Security Status
