@@ -23,5 +23,5 @@ webform_shield.token:
     _controller: '\Drupal\webform_shield\Controller\WebformShieldTokenController::generateToken'
   requirements:
     _access: 'TRUE'
-    form_id: '[a-zA-Z0-9_-]+'
+    form_id: '[a-zA-Z0-9_*-]+'
   methods: [POST]

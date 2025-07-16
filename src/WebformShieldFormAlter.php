@@ -22,9 +22,13 @@ class WebformShieldFormAlter implements RenderCallbackInterface {
       $form_id = $build['#attributes']['id'];
     }
 
-    // Store original action and form ID as data attributes for JavaScript.
+    // Store original action and the PATTERN (not literal form ID) for JavaScript.
     $build['#attributes']['data-action'] = $build['#action'];
-    $build['#attributes']['data-form-id'] = $build['#form_id'];
+    
+    // Use the matching pattern instead of literal form ID for JavaScript
+    // The pattern is what the JavaScript should send to the token endpoint
+    $pattern_for_js = $build['#webform_shield_pattern'] ?? $build['#form_id'];
+    $build['#attributes']['data-form-id'] = $pattern_for_js;
     
     // Change the action so the submission does not go through.
     $build['#action'] = base_path() . 'webform-shield';

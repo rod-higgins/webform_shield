@@ -6,6 +6,10 @@ form_ids:
   - 'user_register_form'
   - 'contact_message_*'
   - 'webform_*'
-excluded_form_ids: []
+  - 'webform-*'
+  - 'webform_submission_*'
+  - 'webform-submission-*'
+excluded_form_ids:
+  - 'views-exposed-form-*'
 token_timeout: 900
 show_form_ids: false

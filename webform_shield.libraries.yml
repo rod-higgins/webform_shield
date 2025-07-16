@@ -1,5 +1,6 @@
 # Webform Shield form protection.
 webform_shield.form:
+  version: 1.x
   css:
     component:
       css/webform_shield.css: {}
@@ -8,3 +9,4 @@ webform_shield.form:
   dependencies:
     - core/drupal
     - core/drupalSettings
+    - core/jquery

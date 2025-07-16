@@ -52,11 +52,12 @@ function webform_shield_form_alter(&$form, FormStateInterface $form_state, $form
   $cache_metadata = CacheableMetadata::createFromRenderArray($form);
   $cache_metadata->addCacheableDependency($config);
   
-  // CRITICAL: Only add user.permissions context, NOT session.exists
-  $cache_metadata->addCacheContexts(['user.permissions']);
+  // Add session context since we validate against session IDs
+  $cache_metadata->addCacheContexts(['user.permissions', 'session.exists']);
   
   $skip_shield = $current_user->hasPermission('skip webform shield');
   $protection = FALSE;
+  $matching_pattern = NULL;
 
   // Get the configured active form IDs for webform shield.
   if ($form_ids = $config->get('form_ids')) {
@@ -69,14 +70,24 @@ function webform_shield_form_alter(&$form, FormStateInterface $form_state, $form
 
     $protection = $included && !$excluded;
 
+    // Find which pattern matched and store it
+    if ($protection) {
+      foreach ($form_ids as $pattern) {
+        if ($pathMatcher->matchPath($form_id, $pattern) || $pathMatcher->matchPath($form['#id'], $pattern)) {
+          $matching_pattern = $pattern;
+          break;
+        }
+      }
+    }
+
     // Other modules can change the protection of this form.
     \Drupal::moduleHandler()->alter('webform_shield_form_status', $form_id, $protection);
 
     if ($protection) {
       // Enable protection for this form if user doesn't have skip permission.
       if (!$skip_shield) {
-        webform_shield_protect_form($form);
-        // Track that protection was added.
+        // Pass the matching pattern to the protection function
+        webform_shield_protect_form($form, $matching_pattern);
         $protection = TRUE;
       }
     }
@@ -116,8 +127,10 @@ function webform_shield_page_attachments(array &$page) {
  *
  * @param array &$form
  *   The form to enable Webform Shield protection on.
+ * @param string|null $matching_pattern
+ *   The configuration pattern that matched this form.
  */
-function webform_shield_protect_form(array &$form) {
+function webform_shield_protect_form(array &$form, $matching_pattern = NULL) {
   // Stop if the form is already protected.
   if (!empty($form['#webform_shield_protected'])) {
     return;
@@ -125,6 +138,11 @@ function webform_shield_protect_form(array &$form) {
 
   // Mark as protected (no token generation during form render!)
   $form['#webform_shield_protected'] = TRUE;
+
+  // Store the matching pattern for JavaScript to use
+  if ($matching_pattern) {
+    $form['#webform_shield_pattern'] = $matching_pattern;
+  }
 
   // Add placeholder for token (populated via AJAX only)
   $form['webform_shield_token'] = [
