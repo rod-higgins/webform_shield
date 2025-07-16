@@ -214,7 +214,7 @@ function webform_shield_form_validation($form, FormStateInterface $form_state) {
 
   // Check if the token is missing or invalid.
   if (!$submitted_token || !_webform_shield_validate_token($submitted_token, $form)) {
-    // Enhanced security logging for failed validations
+    // Always log security events for failed validations
     \Drupal::logger('webform_shield')->warning('Token validation failed: Form=@form, IP=@ip, User=@user, Token=@token', [
       '@form' => $form['#form_id'],
       '@ip' => \Drupal::request()->getClientIp(),
@@ -251,7 +251,7 @@ function webform_shield_cron() {
  * 
  * CRITICAL: This should ONLY be called from AJAX endpoint, never during form render!
  */
-function _webform_shield_generate_token($form_pattern): string {
+function _webform_shield_generate_token($form_identifier): string {
   $config = \Drupal::config('webform_shield.settings');
   $debug_mode = $config->get('debug_mode') ?: FALSE;
   $timeout = $config->get('token_timeout') ?: 900; // Default 15 minutes
@@ -270,7 +270,7 @@ function _webform_shield_generate_token($form_pattern): string {
   
   // Create token data with enhanced security information
   $token_data = [
-    'form_pattern' => $form_pattern, // Store the pattern used for generation
+    'form_identifier' => $form_identifier, // Store the identifier used for generation (could be pattern or literal ID)
     'timestamp' => $timestamp,
     'expiry' => $expiry,
     'session_id' => $session_id,
@@ -280,10 +280,10 @@ function _webform_shield_generate_token($form_pattern): string {
     'site_salt' => Settings::getHashSalt(),
   ];
   
-  // Debug logging for token generation
+  // Debug logging for token generation (only in debug mode)
   if ($debug_mode) {
-    \Drupal::logger('webform_shield')->debug('Token generation debug: Pattern=@pattern, TokenID=@token_id, Timeout=@timeout, SessionID=@session, UserAgent=@ua', [
-      '@pattern' => $form_pattern,
+    \Drupal::logger('webform_shield')->debug('Token generation debug: Identifier=@identifier, TokenID=@token_id, Timeout=@timeout, SessionID=@session, UserAgent=@ua', [
+      '@identifier' => $form_identifier,
       '@token_id' => substr($token_id, 0, 8) . '...',
       '@timeout' => $timeout,
       '@session' => substr($session_id, 0, 8) . '...',
@@ -295,13 +295,15 @@ function _webform_shield_generate_token($form_pattern): string {
   $cache = \Drupal::cache();
   $cache->set('webform_shield:' . $token_id, $token_data, $expiry, ['webform_shield_token']);
   
-  // Log token generation for audit trail
-  \Drupal::logger('webform_shield')->info('Token generated: Pattern=@pattern, User=@user, IP=@ip, Expiry=@expiry', [
-    '@pattern' => $form_pattern,
-    '@user' => $user_id,
-    '@ip' => $client_ip,
-    '@expiry' => date('Y-m-d H:i:s', $expiry),
-  ]);
+  // Log token generation for audit trail (only in debug mode)
+  if ($debug_mode) {
+    \Drupal::logger('webform_shield')->info('Token generated: Identifier=@identifier, User=@user, IP=@ip, Expiry=@expiry', [
+      '@identifier' => $form_identifier,
+      '@user' => $user_id,
+      '@ip' => $client_ip,
+      '@expiry' => date('Y-m-d H:i:s', $expiry),
+    ]);
+  }
   
   // Return the token ID.
   return $token_id;
@@ -319,7 +321,7 @@ function _webform_shield_validate_token($token_id, $form): bool {
     $pattern = $form['#webform_shield_pattern'] ?? NULL;
     $stored_form_id = $form['#webform_shield_form_id'] ?? NULL;
     
-    // Debug logging for token validation start
+    // Debug logging for token validation start (only in debug mode)
     if ($debug_mode) {
       \Drupal::logger('webform_shield')->debug('Token validation debug: Starting validation for Form=@form, Pattern=@pattern, TokenID=@token_id', [
         '@form' => $form_id,
@@ -344,34 +346,34 @@ function _webform_shield_validate_token($token_id, $form): bool {
     $current_user = \Drupal::currentUser();
     $request = \Drupal::request();
     
-    // Debug logging for token data
+    // Debug logging for token data (only in debug mode)
     if ($debug_mode) {
       \Drupal::logger('webform_shield')->debug('Token validation debug: Token data retrieved, validating fields...');
     }
     
     // Validate token data with pattern matching support
-    $form_pattern_from_token = $token_data['form_pattern'] ?? $token_data['form_id'] ?? NULL;
+    $form_identifier_from_token = $token_data['form_identifier'] ?? $token_data['form_pattern'] ?? $token_data['form_id'] ?? NULL;
     
     // Check if the token was generated for the correct form pattern
     $pathMatcher = \Drupal::service('path.matcher');
     $pattern_matches = FALSE;
     
-    if ($form_pattern_from_token) {
+    if ($form_identifier_from_token) {
       // Check if the current form ID matches the pattern the token was generated for
-      if ($form_pattern_from_token === $form_id || 
-          $form_pattern_from_token === $pattern ||
-          $form_pattern_from_token === $stored_form_id ||
-          $pathMatcher->matchPath($form_id, $form_pattern_from_token) ||
-          ($pattern && $pathMatcher->matchPath($pattern, $form_pattern_from_token)) ||
-          ($stored_form_id && $pathMatcher->matchPath($stored_form_id, $form_pattern_from_token))) {
+      if ($form_identifier_from_token === $form_id || 
+          $form_identifier_from_token === $pattern ||
+          $form_identifier_from_token === $stored_form_id ||
+          $pathMatcher->matchPath($form_id, $form_identifier_from_token) ||
+          ($pattern && $pathMatcher->matchPath($pattern, $form_identifier_from_token)) ||
+          ($stored_form_id && $pathMatcher->matchPath($stored_form_id, $form_identifier_from_token))) {
         $pattern_matches = TRUE;
       }
     }
     
     if (!$pattern_matches) {
       if ($debug_mode) {
-        \Drupal::logger('webform_shield')->debug('Token validation debug: Form pattern mismatch - Token pattern=@token_pattern, Form ID=@form_id, Pattern=@pattern', [
-          '@token_pattern' => $form_pattern_from_token,
+        \Drupal::logger('webform_shield')->debug('Token validation debug: Form pattern mismatch - Token identifier=@token_identifier, Form ID=@form_id, Pattern=@pattern', [
+          '@token_identifier' => $form_identifier_from_token,
           '@form_id' => $form_id,
           '@pattern' => $pattern,
         ]);
@@ -442,7 +444,7 @@ function _webform_shield_validate_token($token_id, $form): bool {
       return FALSE;
     }
     
-    // Debug logging for successful validation
+    // Debug logging for successful validation (only in debug mode)
     if ($debug_mode) {
       \Drupal::logger('webform_shield')->debug('Token validation debug: All validations passed, token is valid');
     }
@@ -450,18 +452,20 @@ function _webform_shield_validate_token($token_id, $form): bool {
     // Token is valid, remove it to prevent reuse (one-time use).
     $cache->delete('webform_shield:' . $token_id);
     
-    // Log successful validation
-    \Drupal::logger('webform_shield')->info('Token validated successfully: Form=@form, Pattern=@pattern, User=@user, IP=@ip', [
-      '@form' => $form_id,
-      '@pattern' => $form_pattern_from_token,
-      '@user' => $current_user->id(),
-      '@ip' => $request->getClientIp(),
-    ]);
+    // Log successful validation (only in debug mode)
+    if ($debug_mode) {
+      \Drupal::logger('webform_shield')->info('Token validated successfully: Form=@form, Identifier=@identifier, User=@user, IP=@ip', [
+        '@form' => $form_id,
+        '@identifier' => $form_identifier_from_token,
+        '@user' => $current_user->id(),
+        '@ip' => $request->getClientIp(),
+      ]);
+    }
     
     return TRUE;
   }
   catch (\Exception $e) {
-    // Log the error and return false.
+    // Always log errors regardless of debug mode
     \Drupal::logger('webform_shield')->error('Token validation error: @message | Form=@form, Token=@token', [
       '@message' => $e->getMessage(),
       '@form' => $form['#form_id'] ?? 'unknown',
@@ -489,6 +493,10 @@ function _webform_shield_cleanup_expired_tokens() {
   // Clear any cache tags for expired tokens
   \Drupal::service('cache_tags.invalidator')->invalidateTags(['webform_shield_token']);
   
-  // Log cleanup activity
-  \Drupal::logger('webform_shield')->info('Token cleanup completed via cron');
+  // Log cleanup activity (only in debug mode)
+  $config = \Drupal::config('webform_shield.settings');
+  $debug_mode = $config->get('debug_mode') ?: FALSE;
+  if ($debug_mode) {
+    \Drupal::logger('webform_shield')->info('Token cleanup completed via cron');
+  }
 }

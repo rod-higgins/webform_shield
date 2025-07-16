@@ -66,13 +66,13 @@ class WebformShieldTokenController extends ControllerBase {
    *
    * @param \Symfony\Component\HttpFoundation\Request $request
    *   The request object.
-   * @param string $form_pattern
+   * @param string $form_id
    *   The form pattern or ID to generate a token for.
    *
    * @return \Symfony\Component\HttpFoundation\JsonResponse
    *   JSON response containing the token.
    */
-  public function generateToken(Request $request, $form_pattern) {
+  public function generateToken(Request $request, $form_id) {
     $config = $this->config('webform_shield.settings');
     $debug_mode = $config->get('debug_mode') ?: FALSE;
     
@@ -80,15 +80,17 @@ class WebformShieldTokenController extends ControllerBase {
       $client_ip = $request->getClientIp();
       $user_agent = $request->headers->get('User-Agent', '');
       
-      // Enhanced security logging
-      $this->getLogger('webform_shield')->info('Token request: IP=@ip, User-Agent=@ua, Pattern=@pattern, User=@user', [
-        '@ip' => $client_ip,
-        '@ua' => substr($user_agent, 0, 255),
-        '@pattern' => $form_pattern,
-        '@user' => $this->currentUser()->id(),
-      ]);
+      // Log token requests (only in debug mode)
+      if ($debug_mode) {
+        $this->getLogger('webform_shield')->info('Token request: IP=@ip, User-Agent=@ua, Pattern=@pattern, User=@user', [
+          '@ip' => $client_ip,
+          '@ua' => substr($user_agent, 0, 255),
+          '@pattern' => $form_id,
+          '@user' => $this->currentUser()->id(),
+        ]);
+      }
 
-      // Debug logging for request details
+      // Debug logging for request details (only in debug mode)
       if ($debug_mode) {
         $this->getLogger('webform_shield')->debug('Token request debug: Method=@method, Headers=@headers, Origin=@origin', [
           '@method' => $request->getMethod(),
@@ -99,7 +101,7 @@ class WebformShieldTokenController extends ControllerBase {
 
       // Validate request method
       if (!$request->isMethod('POST')) {
-        $this->logSecurityEvent('Invalid request method: ' . $request->getMethod(), $request, $form_pattern);
+        $this->logSecurityEvent('Invalid request method: ' . $request->getMethod(), $request, $form_id);
         return new JsonResponse([
           'success' => FALSE,
           'error' => 'Invalid request method',
@@ -109,7 +111,7 @@ class WebformShieldTokenController extends ControllerBase {
       // Validate AJAX request headers
       if (!$request->headers->has('X-Requested-With') || 
           $request->headers->get('X-Requested-With') !== 'XMLHttpRequest') {
-        $this->logSecurityEvent('Non-AJAX request detected', $request, $form_pattern);
+        $this->logSecurityEvent('Non-AJAX request detected', $request, $form_id);
         return new JsonResponse([
           'success' => FALSE,
           'error' => 'Invalid request headers',
@@ -124,7 +126,7 @@ class WebformShieldTokenController extends ControllerBase {
       $currentDomain = $request->getSchemeAndHttpHost();
       
       if ($origin && !str_starts_with($origin, $currentDomain)) {
-        $this->logSecurityEvent('Cross-origin request detected: ' . $origin, $request, $form_pattern);
+        $this->logSecurityEvent('Cross-origin request detected: ' . $origin, $request, $form_id);
         return new JsonResponse([
           'success' => FALSE,
           'error' => 'Invalid origin',
@@ -132,7 +134,7 @@ class WebformShieldTokenController extends ControllerBase {
       }
 
       if ($referer && !str_starts_with($referer, $currentDomain)) {
-        $this->logSecurityEvent('Invalid referer detected: ' . $referer, $request, $form_pattern);
+        $this->logSecurityEvent('Invalid referer detected: ' . $referer, $request, $form_id);
         return new JsonResponse([
           'success' => FALSE,
           'error' => 'Invalid referer',
@@ -152,7 +154,7 @@ class WebformShieldTokenController extends ControllerBase {
             $this->getLogger('webform_shield')->debug('Rate limit check passed for IP: @ip', ['@ip' => $client_ip]);
           }
         } else {
-          $this->logSecurityEvent('Rate limit exceeded', $request, $form_pattern);
+          $this->logSecurityEvent('Rate limit exceeded', $request, $form_id);
           return new JsonResponse([
             'success' => FALSE,
             'error' => 'Too many requests',
@@ -165,8 +167,8 @@ class WebformShieldTokenController extends ControllerBase {
       }
 
       // Validate form pattern with stricter regex
-      if (empty($form_pattern) || !preg_match('/^[a-zA-Z0-9_-]+(\*)?$/', $form_pattern)) {
-        $this->logSecurityEvent('Invalid form pattern format: ' . $form_pattern, $request, $form_pattern);
+      if (empty($form_id) || !preg_match('/^[a-zA-Z0-9_-]+(\*)?$/', $form_id)) {
+        $this->logSecurityEvent('Invalid form pattern format: ' . $form_id, $request, $form_id);
         return new JsonResponse([
           'success' => FALSE,
           'error' => 'Invalid form identifier',
@@ -179,14 +181,14 @@ class WebformShieldTokenController extends ControllerBase {
 
       if ($debug_mode) {
         $this->getLogger('webform_shield')->debug('Form protection check: Pattern=@pattern, Patterns=@patterns, Exclusions=@exclusions', [
-          '@pattern' => $form_pattern,
+          '@pattern' => $form_id,
           '@patterns' => implode(', ', $form_ids),
           '@exclusions' => implode(', ', $excluded_form_ids),
         ]);
       }
 
       if (empty($form_ids)) {
-        $this->logSecurityEvent('No forms configured for protection', $request, $form_pattern);
+        $this->logSecurityEvent('No forms configured for protection', $request, $form_id);
         return new JsonResponse([
           'success' => FALSE,
           'error' => 'Service not configured',
@@ -199,7 +201,7 @@ class WebformShieldTokenController extends ControllerBase {
       
       // Check if the incoming form_pattern matches any of our configured patterns
       foreach ($form_ids as $pattern) {
-        if ($form_pattern === $pattern || $this->pathMatcher->matchPath($form_pattern, $pattern)) {
+        if ($form_id === $pattern || $this->pathMatcher->matchPath($form_id, $pattern)) {
           $included = TRUE;
           if ($debug_mode) {
             $this->getLogger('webform_shield')->debug('Form matched inclusion pattern: @pattern', ['@pattern' => $pattern]);
@@ -210,7 +212,7 @@ class WebformShieldTokenController extends ControllerBase {
       
       // Check exclusions
       foreach ($excluded_form_ids as $pattern) {
-        if ($form_pattern === $pattern || $this->pathMatcher->matchPath($form_pattern, $pattern)) {
+        if ($form_id === $pattern || $this->pathMatcher->matchPath($form_id, $pattern)) {
           $excluded = TRUE;
           if ($debug_mode) {
             $this->getLogger('webform_shield')->debug('Form matched exclusion pattern: @pattern', ['@pattern' => $pattern]);
@@ -220,7 +222,7 @@ class WebformShieldTokenController extends ControllerBase {
       }
 
       if (!$included || $excluded) {
-        $this->logSecurityEvent('Form not protected by configuration: ' . $form_pattern, $request, $form_pattern);
+        $this->logSecurityEvent('Form not protected by configuration: ' . $form_id, $request, $form_id);
         return new JsonResponse([
           'success' => FALSE,
           'error' => 'Form not protected',
@@ -229,10 +231,12 @@ class WebformShieldTokenController extends ControllerBase {
 
       // Check if user has skip permission.
       if ($this->currentUser()->hasPermission('skip webform shield')) {
-        $this->getLogger('webform_shield')->notice('User has skip permission: User=@user, Pattern=@pattern', [
-          '@user' => $this->currentUser()->id(),
-          '@pattern' => $form_pattern,
-        ]);
+        if ($debug_mode) {
+          $this->getLogger('webform_shield')->notice('User has skip permission: User=@user, Pattern=@pattern', [
+            '@user' => $this->currentUser()->id(),
+            '@pattern' => $form_id,
+          ]);
+        }
         return new JsonResponse([
           'success' => FALSE,
           'error' => 'User has skip permission',
@@ -251,14 +255,16 @@ class WebformShieldTokenController extends ControllerBase {
       }
 
       // Generate the token using the form_pattern (this is the key fix!)
-      $token = _webform_shield_generate_token($form_pattern);
+      $token = _webform_shield_generate_token($form_id);
       
-      // Log successful token generation
-      $this->getLogger('webform_shield')->info('Token generated successfully: Pattern=@pattern, User=@user, IP=@ip', [
-        '@pattern' => $form_pattern,
-        '@user' => $this->currentUser()->id(),
-        '@ip' => $client_ip,
-      ]);
+      // Log successful token generation (only in debug mode)
+      if ($debug_mode) {
+        $this->getLogger('webform_shield')->info('Token generated successfully: Pattern=@pattern, User=@user, IP=@ip', [
+          '@pattern' => $form_id,
+          '@user' => $this->currentUser()->id(),
+          '@ip' => $client_ip,
+        ]);
+      }
 
       // Set security headers
       $response = new JsonResponse([
@@ -276,19 +282,24 @@ class WebformShieldTokenController extends ControllerBase {
 
     }
     catch (\Exception $e) {
-      $this->logSecurityEvent('Token generation error: ' . $e->getMessage(), $request, $form_pattern);
+      $this->logSecurityEvent('Token generation error: ' . $e->getMessage(), $request, $form_id);
       
-      // Log the full exception for debugging (but don't expose to client)
-      $this->getLogger('webform_shield')->error('Token generation exception: @message | @trace', [
-        '@message' => $e->getMessage(),
-        '@trace' => $e->getTraceAsString(),
-      ]);
-
+      // Always log the exception for debugging (but only details in debug mode)
       if ($debug_mode) {
+        $this->getLogger('webform_shield')->error('Token generation exception: @message | @trace', [
+          '@message' => $e->getMessage(),
+          '@trace' => $e->getTraceAsString(),
+        ]);
+        
         $this->getLogger('webform_shield')->debug('Token generation debug: Exception details - @message | @file:@line', [
           '@message' => $e->getMessage(),
           '@file' => $e->getFile(),
           '@line' => $e->getLine(),
+        ]);
+      } else {
+        // Just log the basic error without stack trace
+        $this->getLogger('webform_shield')->error('Token generation exception: @message', [
+          '@message' => $e->getMessage(),
         ]);
       }
 
@@ -306,15 +317,15 @@ class WebformShieldTokenController extends ControllerBase {
    *   The security event message.
    * @param \Symfony\Component\HttpFoundation\Request $request
    *   The request object.
-   * @param string $form_pattern
-   *   The form pattern.
+   * @param string $form_id
+   *   The form ID.
    */
-  private function logSecurityEvent($message, Request $request, $form_pattern) {
+  private function logSecurityEvent($message, Request $request, $form_id) {
     $this->getLogger('webform_shield')->warning('Security event: @message | IP=@ip, UA=@ua, Pattern=@pattern, User=@user, Referer=@referer', [
       '@message' => $message,
       '@ip' => $request->getClientIp(),
       '@ua' => substr($request->headers->get('User-Agent', ''), 0, 255),
-      '@pattern' => $form_pattern,
+      '@pattern' => $form_id,
       '@user' => $this->currentUser()->id(),
       '@referer' => substr($request->headers->get('Referer', ''), 0, 255),
     ]);
