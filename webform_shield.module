@@ -2,7 +2,7 @@
 
 /**
  * @file
- * Implements the webform_shield module with enhanced security.
+ * Implements the webform_shield module with enhanced security and AJAX support.
  */
 
 use Drupal\Component\Utility\Crypt;
@@ -87,7 +87,7 @@ function webform_shield_form_alter(&$form, FormStateInterface $form_state, $form
       // Enable protection for this form if user doesn't have skip permission.
       if (!$skip_shield) {
         // Pass the matching pattern to the protection function
-        webform_shield_protect_form($form, $matching_pattern);
+        webform_shield_protect_form($form, $matching_pattern, $form_id);
         $protection = TRUE;
       }
     }
@@ -149,8 +149,10 @@ function webform_shield_page_attachments(array &$page) {
  *   The form to enable Webform Shield protection on.
  * @param string|null $matching_pattern
  *   The configuration pattern that matched this form.
+ * @param string $form_id
+ *   The actual form ID for validation.
  */
-function webform_shield_protect_form(array &$form, $matching_pattern = NULL) {
+function webform_shield_protect_form(array &$form, $matching_pattern = NULL, $form_id = NULL) {
   // Stop if the form is already protected.
   if (!empty($form['#webform_shield_protected'])) {
     return;
@@ -162,6 +164,11 @@ function webform_shield_protect_form(array &$form, $matching_pattern = NULL) {
   // Store the matching pattern for JavaScript to use
   if ($matching_pattern) {
     $form['#webform_shield_pattern'] = $matching_pattern;
+  }
+
+  // Store the actual form ID for validation
+  if ($form_id) {
+    $form['#webform_shield_form_id'] = $form_id;
   }
 
   // Add placeholder for token (populated via AJAX only)
@@ -206,7 +213,7 @@ function webform_shield_form_validation($form, FormStateInterface $form_state) {
   }
 
   // Check if the token is missing or invalid.
-  if (!$submitted_token || !_webform_shield_validate_token($submitted_token, $form['#form_id'])) {
+  if (!$submitted_token || !_webform_shield_validate_token($submitted_token, $form)) {
     // Enhanced security logging for failed validations
     \Drupal::logger('webform_shield')->warning('Token validation failed: Form=@form, IP=@ip, User=@user, Token=@token', [
       '@form' => $form['#form_id'],
@@ -244,7 +251,7 @@ function webform_shield_cron() {
  * 
  * CRITICAL: This should ONLY be called from AJAX endpoint, never during form render!
  */
-function _webform_shield_generate_token($form_id): string {
+function _webform_shield_generate_token($form_pattern): string {
   $config = \Drupal::config('webform_shield.settings');
   $debug_mode = $config->get('debug_mode') ?: FALSE;
   $timeout = $config->get('token_timeout') ?: 900; // Default 15 minutes
@@ -263,7 +270,7 @@ function _webform_shield_generate_token($form_id): string {
   
   // Create token data with enhanced security information
   $token_data = [
-    'form_id' => $form_id,
+    'form_pattern' => $form_pattern, // Store the pattern used for generation
     'timestamp' => $timestamp,
     'expiry' => $expiry,
     'session_id' => $session_id,
@@ -275,8 +282,8 @@ function _webform_shield_generate_token($form_id): string {
   
   // Debug logging for token generation
   if ($debug_mode) {
-    \Drupal::logger('webform_shield')->debug('Token generation debug: Form=@form, TokenID=@token_id, Timeout=@timeout, SessionID=@session, UserAgent=@ua', [
-      '@form' => $form_id,
+    \Drupal::logger('webform_shield')->debug('Token generation debug: Pattern=@pattern, TokenID=@token_id, Timeout=@timeout, SessionID=@session, UserAgent=@ua', [
+      '@pattern' => $form_pattern,
       '@token_id' => substr($token_id, 0, 8) . '...',
       '@timeout' => $timeout,
       '@session' => substr($session_id, 0, 8) . '...',
@@ -289,8 +296,8 @@ function _webform_shield_generate_token($form_id): string {
   $cache->set('webform_shield:' . $token_id, $token_data, $expiry, ['webform_shield_token']);
   
   // Log token generation for audit trail
-  \Drupal::logger('webform_shield')->info('Token generated: Form=@form, User=@user, IP=@ip, Expiry=@expiry', [
-    '@form' => $form_id,
+  \Drupal::logger('webform_shield')->info('Token generated: Pattern=@pattern, User=@user, IP=@ip, Expiry=@expiry', [
+    '@pattern' => $form_pattern,
     '@user' => $user_id,
     '@ip' => $client_ip,
     '@expiry' => date('Y-m-d H:i:s', $expiry),
@@ -301,17 +308,22 @@ function _webform_shield_generate_token($form_id): string {
 }
 
 /**
- * Helper function to validate a token with enhanced security checks.
+ * Helper function to validate a token with enhanced security checks and pattern matching.
  */
-function _webform_shield_validate_token($token_id, $form_id): bool {
+function _webform_shield_validate_token($token_id, $form): bool {
   $config = \Drupal::config('webform_shield.settings');
   $debug_mode = $config->get('debug_mode') ?: FALSE;
   
   try {
+    $form_id = $form['#form_id'];
+    $pattern = $form['#webform_shield_pattern'] ?? NULL;
+    $stored_form_id = $form['#webform_shield_form_id'] ?? NULL;
+    
     // Debug logging for token validation start
     if ($debug_mode) {
-      \Drupal::logger('webform_shield')->debug('Token validation debug: Starting validation for Form=@form, TokenID=@token_id', [
+      \Drupal::logger('webform_shield')->debug('Token validation debug: Starting validation for Form=@form, Pattern=@pattern, TokenID=@token_id', [
         '@form' => $form_id,
+        '@pattern' => $pattern,
         '@token_id' => substr($token_id, 0, 8) . '...',
       ]);
     }
@@ -337,12 +349,31 @@ function _webform_shield_validate_token($token_id, $form_id): bool {
       \Drupal::logger('webform_shield')->debug('Token validation debug: Token data retrieved, validating fields...');
     }
     
-    // Validate token data.
-    if ($token_data['form_id'] !== $form_id) {
+    // Validate token data with pattern matching support
+    $form_pattern_from_token = $token_data['form_pattern'] ?? $token_data['form_id'] ?? NULL;
+    
+    // Check if the token was generated for the correct form pattern
+    $pathMatcher = \Drupal::service('path.matcher');
+    $pattern_matches = FALSE;
+    
+    if ($form_pattern_from_token) {
+      // Check if the current form ID matches the pattern the token was generated for
+      if ($form_pattern_from_token === $form_id || 
+          $form_pattern_from_token === $pattern ||
+          $form_pattern_from_token === $stored_form_id ||
+          $pathMatcher->matchPath($form_id, $form_pattern_from_token) ||
+          ($pattern && $pathMatcher->matchPath($pattern, $form_pattern_from_token)) ||
+          ($stored_form_id && $pathMatcher->matchPath($stored_form_id, $form_pattern_from_token))) {
+        $pattern_matches = TRUE;
+      }
+    }
+    
+    if (!$pattern_matches) {
       if ($debug_mode) {
-        \Drupal::logger('webform_shield')->debug('Token validation debug: Form ID mismatch - Expected=@expected, Got=@got', [
-          '@expected' => $form_id,
-          '@got' => $token_data['form_id'],
+        \Drupal::logger('webform_shield')->debug('Token validation debug: Form pattern mismatch - Token pattern=@token_pattern, Form ID=@form_id, Pattern=@pattern', [
+          '@token_pattern' => $form_pattern_from_token,
+          '@form_id' => $form_id,
+          '@pattern' => $pattern,
         ]);
       }
       return FALSE;
@@ -420,8 +451,9 @@ function _webform_shield_validate_token($token_id, $form_id): bool {
     $cache->delete('webform_shield:' . $token_id);
     
     // Log successful validation
-    \Drupal::logger('webform_shield')->info('Token validated successfully: Form=@form, User=@user, IP=@ip', [
+    \Drupal::logger('webform_shield')->info('Token validated successfully: Form=@form, Pattern=@pattern, User=@user, IP=@ip', [
       '@form' => $form_id,
+      '@pattern' => $form_pattern_from_token,
       '@user' => $current_user->id(),
       '@ip' => $request->getClientIp(),
     ]);
@@ -432,7 +464,7 @@ function _webform_shield_validate_token($token_id, $form_id): bool {
     // Log the error and return false.
     \Drupal::logger('webform_shield')->error('Token validation error: @message | Form=@form, Token=@token', [
       '@message' => $e->getMessage(),
-      '@form' => $form_id,
+      '@form' => $form['#form_id'] ?? 'unknown',
       '@token' => substr($token_id, 0, 8) . '...',
     ]);
     
