@@ -141,24 +141,40 @@ class WebformShieldTokenController extends ControllerBase {
         ], 403);
       }
 
-      // Rate limiting check
+      // Rate limiting check with IP exclusions
       $flood_identifier = 'webform_shield.token_request';
       $flood_window = 3600; // 1 hour
       $flood_threshold = $config->get('rate_limit_threshold') ?: 100;
 
       if ($config->get('rate_limit_enabled') !== FALSE) {
-        if ($this->flood->isAllowed($flood_identifier, $flood_threshold, $flood_window, $client_ip)) {
-          $this->flood->register($flood_identifier, $flood_window, $client_ip);
-          
-          if ($debug_mode) {
-            $this->getLogger('webform_shield')->debug('Rate limit check passed for IP: @ip', ['@ip' => $client_ip]);
+        // Check if this IP is excluded from rate limiting
+        $is_excluded = $this->isIpExcludedFromRateLimit($client_ip, $config);
+        
+        if ($debug_mode) {
+          $this->getLogger('webform_shield')->debug('Rate limit check: IP=@ip, Excluded=@excluded', [
+            '@ip' => $client_ip,
+            '@excluded' => $is_excluded ? 'yes' : 'no',
+          ]);
+        }
+        
+        if (!$is_excluded) {
+          if ($this->flood->isAllowed($flood_identifier, $flood_threshold, $flood_window, $client_ip)) {
+            $this->flood->register($flood_identifier, $flood_window, $client_ip);
+            
+            if ($debug_mode) {
+              $this->getLogger('webform_shield')->debug('Rate limit check passed for IP: @ip', ['@ip' => $client_ip]);
+            }
+          } else {
+            $this->logSecurityEvent('Rate limit exceeded', $request, $form_id);
+            return new JsonResponse([
+              'success' => FALSE,
+              'error' => 'Too many requests',
+            ], 429);
           }
         } else {
-          $this->logSecurityEvent('Rate limit exceeded', $request, $form_id);
-          return new JsonResponse([
-            'success' => FALSE,
-            'error' => 'Too many requests',
-          ], 429);
+          if ($debug_mode) {
+            $this->getLogger('webform_shield')->debug('Rate limiting bypassed for excluded IP: @ip', ['@ip' => $client_ip]);
+          }
         }
       } else {
         if ($debug_mode) {
@@ -308,6 +324,145 @@ class WebformShieldTokenController extends ControllerBase {
         'error' => 'Internal server error',
       ], 500);
     }
+  }
+
+  /**
+   * Check if an IP address is excluded from rate limiting.
+   *
+   * @param string $client_ip
+   *   The client IP address to check.
+   * @param \Drupal\Core\Config\Config $config
+   *   The configuration object.
+   *
+   * @return bool
+   *   TRUE if the IP is excluded, FALSE otherwise.
+   */
+  private function isIpExcludedFromRateLimit($client_ip, $config) {
+    $excluded_ips = $config->get('rate_limit_excluded_ips') ?? [];
+    
+    if (empty($excluded_ips)) {
+      return FALSE;
+    }
+    
+    $debug_mode = $config->get('debug_mode') ?: FALSE;
+    
+    foreach ($excluded_ips as $excluded_entry) {
+      $excluded_entry = trim($excluded_entry);
+      
+      if (empty($excluded_entry)) {
+        continue;
+      }
+      
+      // Check if it's a CIDR subnet
+      if (strpos($excluded_entry, '/') !== FALSE) {
+        if ($this->ipInSubnet($client_ip, $excluded_entry)) {
+          if ($debug_mode) {
+            $this->getLogger('webform_shield')->debug('IP @ip matches excluded subnet @subnet', [
+              '@ip' => $client_ip,
+              '@subnet' => $excluded_entry,
+            ]);
+          }
+          return TRUE;
+        }
+      } else {
+        // Direct IP comparison
+        if ($client_ip === $excluded_entry) {
+          if ($debug_mode) {
+            $this->getLogger('webform_shield')->debug('IP @ip matches excluded IP @excluded', [
+              '@ip' => $client_ip,
+              '@excluded' => $excluded_entry,
+            ]);
+          }
+          return TRUE;
+        }
+      }
+    }
+    
+    return FALSE;
+  }
+
+  /**
+   * Check if an IP address is within a given subnet (CIDR notation).
+   *
+   * @param string $ip
+   *   The IP address to check.
+   * @param string $subnet
+   *   The subnet in CIDR notation (e.g., 192.168.1.0/24).
+   *
+   * @return bool
+   *   TRUE if the IP is in the subnet, FALSE otherwise.
+   */
+  private function ipInSubnet($ip, $subnet) {
+    $parts = explode('/', $subnet);
+    if (count($parts) !== 2) {
+      return FALSE;
+    }
+    
+    $subnet_ip = $parts[0];
+    $prefix_length = (int) $parts[1];
+    
+    // Validate both IPs
+    if (!filter_var($ip, FILTER_VALIDATE_IP) || !filter_var($subnet_ip, FILTER_VALIDATE_IP)) {
+      return FALSE;
+    }
+    
+    // Handle IPv4
+    if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) && 
+        filter_var($subnet_ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
+      
+      if ($prefix_length < 0 || $prefix_length > 32) {
+        return FALSE;
+      }
+      
+      $ip_long = ip2long($ip);
+      $subnet_long = ip2long($subnet_ip);
+      
+      if ($ip_long === FALSE || $subnet_long === FALSE) {
+        return FALSE;
+      }
+      
+      $mask = -1 << (32 - $prefix_length);
+      return ($ip_long & $mask) === ($subnet_long & $mask);
+    }
+    
+    // Handle IPv6
+    if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) && 
+        filter_var($subnet_ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6)) {
+      
+      if ($prefix_length < 0 || $prefix_length > 128) {
+        return FALSE;
+      }
+      
+      $ip_bin = inet_pton($ip);
+      $subnet_bin = inet_pton($subnet_ip);
+      
+      if ($ip_bin === FALSE || $subnet_bin === FALSE) {
+        return FALSE;
+      }
+      
+      $bytes_to_check = floor($prefix_length / 8);
+      $bits_remainder = $prefix_length % 8;
+      
+      // Check full bytes
+      if ($bytes_to_check > 0) {
+        if (substr($ip_bin, 0, $bytes_to_check) !== substr($subnet_bin, 0, $bytes_to_check)) {
+          return FALSE;
+        }
+      }
+      
+      // Check remaining bits
+      if ($bits_remainder > 0 && $bytes_to_check < 16) {
+        $mask = 0xFF << (8 - $bits_remainder);
+        $ip_byte = ord($ip_bin[$bytes_to_check]);
+        $subnet_byte = ord($subnet_bin[$bytes_to_check]);
+        
+        return ($ip_byte & $mask) === ($subnet_byte & $mask);
+      }
+      
+      return TRUE;
+    }
+    
+    return FALSE;
   }
 
   /**

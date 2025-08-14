@@ -26,6 +26,12 @@ webform_shield.settings:
     rate_limit_threshold:
       type: integer
       label: 'Rate limit threshold per hour per IP'
+    rate_limit_excluded_ips:
+      type: sequence
+      label: 'IP addresses and subnets excluded from rate limiting'
+      sequence:
+        type: string
+        label: 'IP address or subnet (CIDR notation)'
     log_security_events:
       type: boolean
       label: 'Log security events for monitoring'

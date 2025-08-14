@@ -107,6 +107,19 @@ class WebformShieldSettingsForm extends ConfigFormBase {
       ],
     ];
 
+    $form['security']['rate_limit_excluded_ips'] = [
+      '#type' => 'textarea',
+      '#title' => $this->t('Rate Limiting Excluded IPs/Subnets'),
+      '#default_value' => implode("\r\n", $config->get('rate_limit_excluded_ips') ?? []),
+      '#description' => $this->t('IP addresses and subnets that should be excluded from rate limiting. Each entry should be on a separate line. Supports:<br>• Individual IPs: <code>192.168.1.1</code><br>• IPv4 CIDR subnets: <code>192.168.1.0/24</code><br>• IPv6 addresses: <code>2001:db8::1</code><br>• IPv6 CIDR subnets: <code>2001:db8::/32</code><br><strong>Use case:</strong> Corporate proxy servers, shared NAT gateways, or trusted networks where many legitimate users share the same IP.'),
+      '#rows' => 5,
+      '#states' => [
+        'visible' => [
+          ':input[name="rate_limit_enabled"]' => ['checked' => TRUE],
+        ],
+      ],
+    ];
+
     // Advanced Security Settings
     $form['advanced_security'] = [
       '#type' => 'fieldset',
@@ -179,6 +192,35 @@ class WebformShieldSettingsForm extends ConfigFormBase {
   /**
    * {@inheritdoc}
    */
+  public function validateForm(array &$form, FormStateInterface $form_state) {
+    parent::validateForm($form, $form_state);
+    
+    // Validate excluded IPs format
+    $excluded_ips_value = $form_state->getValue('rate_limit_excluded_ips');
+    if (!empty($excluded_ips_value)) {
+      $excluded_ips = array_filter(explode("\r\n", $excluded_ips_value));
+      foreach ($excluded_ips as $line_number => $ip_entry) {
+        $ip_entry = trim($ip_entry);
+        if (empty($ip_entry)) {
+          continue;
+        }
+        
+        // Validate IP format
+        if (!$this->validateIpOrSubnet($ip_entry)) {
+          $form_state->setErrorByName('rate_limit_excluded_ips', 
+            $this->t('Line @line: "@entry" is not a valid IP address or subnet. Use formats like 192.168.1.1, 192.168.1.0/24, or 2001:db8::/32', [
+              '@line' => $line_number + 1,
+              '@entry' => $ip_entry,
+            ])
+          );
+        }
+      }
+    }
+  }
+
+  /**
+   * {@inheritdoc}
+   */
   public function submitForm(array &$form, FormStateInterface $form_state) {
     parent::submitForm($form, $form_state);
 
@@ -189,6 +231,7 @@ class WebformShieldSettingsForm extends ConfigFormBase {
       ->set('check_ip', (bool) $form_state->getValue('check_ip'))
       ->set('rate_limit_enabled', (bool) $form_state->getValue('rate_limit_enabled'))
       ->set('rate_limit_threshold', (int) $form_state->getValue('rate_limit_threshold'))
+      ->set('rate_limit_excluded_ips', array_filter(explode("\r\n", $form_state->getValue('rate_limit_excluded_ips'))))
       ->set('log_security_events', (bool) $form_state->getValue('log_security_events'))
       ->set('block_suspicious_requests', (bool) $form_state->getValue('block_suspicious_requests'))
       ->set('csrf_token_validation', TRUE) // Always enabled for security
@@ -198,6 +241,50 @@ class WebformShieldSettingsForm extends ConfigFormBase {
 
     // Clear caches to ensure new settings take effect
     drupal_flush_all_caches();
+  }
+
+  /**
+   * Validate IP address or subnet format.
+   *
+   * @param string $ip_entry
+   *   The IP address or subnet to validate.
+   *
+   * @return bool
+   *   TRUE if valid, FALSE otherwise.
+   */
+  private function validateIpOrSubnet($ip_entry) {
+    // Check if it's a CIDR subnet
+    if (strpos($ip_entry, '/') !== FALSE) {
+      $parts = explode('/', $ip_entry);
+      if (count($parts) !== 2) {
+        return FALSE;
+      }
+      
+      $ip = $parts[0];
+      $prefix = $parts[1];
+      
+      // Validate IP part
+      if (!filter_var($ip, FILTER_VALIDATE_IP)) {
+        return FALSE;
+      }
+      
+      // Validate prefix length
+      if (!is_numeric($prefix) || $prefix < 0) {
+        return FALSE;
+      }
+      
+      // Check prefix length limits based on IP version
+      if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
+        return $prefix <= 32;
+      } elseif (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6)) {
+        return $prefix <= 128;
+      }
+      
+      return FALSE;
+    }
+    
+    // Check if it's a regular IP address
+    return filter_var($ip_entry, FILTER_VALIDATE_IP) !== FALSE;
   }
 
   /**
@@ -236,6 +323,12 @@ class WebformShieldSettingsForm extends ConfigFormBase {
     
     if ($percentage < 80) {
       $markup .= '<p><strong>Recommendation:</strong> Enable more security features for better protection.</p>';
+    }
+    
+    // Add rate limiting exclusion info
+    $excluded_ips = $config->get('rate_limit_excluded_ips') ?? [];
+    if (!empty($excluded_ips) && $config->get('rate_limit_enabled') !== FALSE) {
+      $markup .= '<p><strong>Rate Limiting Exclusions:</strong> ' . count($excluded_ips) . ' IP(s)/subnet(s) excluded</p>';
     }
     
     $markup .= '</div>';
